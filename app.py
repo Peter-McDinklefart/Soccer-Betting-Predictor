@@ -4,10 +4,6 @@ import requests
 import math
 from datetime import datetime
 
-# --- GLOBAL CONFIGURATION (FIXED URL INFRASTRUCTURE) ---
-HOST = "://rapidapi.com"
-BASE_URL = "https://://rapidapi.com/v3"
-
 # --- STREAMLIT UI HEADER ---
 st.set_page_config(page_title="Alpha-Predict Soccer Engine", layout="wide")
 st.title("⚽ Alpha-Predict: Advanced Soccer Engine")
@@ -16,7 +12,7 @@ st.write("Professional-grade Dixon-Coles model utilizing Exponential Time-Decay 
 # --- CORE MATH LAYERS ---
 def calculate_time_weight(match_date_str, target_date, half_life_days=30):
     try:
-        # Strip timestamp timezone notation safely to extract 'YYYY-MM-DD'
+        # Strip out timestamp timezone notation safely to extract 'YYYY-MM-DD'
         clean_date_str = match_date_str.split("T")[0]
         match_date = datetime.strptime(clean_date_str, "%Y-%m-%d")
         delta_days = (target_date - match_date).days
@@ -49,7 +45,6 @@ def calculate_dixon_coles_probs(mu, eta, tau=-0.05, max_goals=6):
     return home_win / total_p, draw / total_p, away_win / total_p
 
 # --- SIDEBAR CONFIGURATION ---
-# Safely pulls from Streamlit secrets vault, or falls back to sidebar textbox
 API_KEY = st.secrets.get("MY_RAPIDAPI_KEY", st.sidebar.text_input("RapidAPI Key:", type="password"))
 half_life = st.sidebar.slider("Form Decay Half-Life (Days)", 10, 60, 25)
 
@@ -74,28 +69,27 @@ if st.button("⚡ Generate Advanced Match Projection"):
         st.warning("⚠️ Please provide a valid RapidAPI Key.")
     else:
         with st.spinner("Processing live historical event coordinates and xG models..."):
-            # Construct secure headers using cleaned inputs
+            
+            # HARDCODED LITERAL URL STRINGS (No dynamic combining variables to eliminate syntax collisions)
+            clean_url = "https://api-football-v1.p.rapidapi.com/v3/fixtures"
+            
             headers = {
                 "X-RapidAPI-Key": API_KEY.strip(), 
-                "X-RapidAPI-Host": HOST
+                "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
             }
             league_id = league_options[selected_league]
-
-            # Safe endpoint compilation using global BASE_URL variable
-            url = f"{BASE_URL}/fixtures"
             params = {"league": str(league_id), "season": str(season_year), "status": "FT"}
             
             try:
-                response_obj = requests.get(url, headers=headers, params=params)
+                response_obj = requests.get(clean_url, headers=headers, params=params)
                 
-                # Check for HTTP Layer Errors (e.g., 403 Forbidden or 429 Rate Limit)
                 if response_obj.status_code != 200:
-                    st.error(f"❌ Server Connection Error ({response_obj.status_code}). Check if your API subscription or key is active.")
+                    st.error(f"❌ Server Connection Error ({response_obj.status_code}). Check if your API key or active subscription plan is correct.")
                     st.stop()
                     
                 res = response_obj.json()
             except Exception as network_err:
-                st.error(f"❌ Failed to reach data endpoint: {network_err}")
+                st.error(f"❌ Network layer connection failure: {network_err}")
                 st.stop()
 
             if not res.get('response') or len(res['response']) == 0:
@@ -114,7 +108,6 @@ if st.button("⚡ Generate Advanced Match Projection"):
                     if w < 0.01: 
                         continue
                     
-                    # Prevent crashes if historical scoreline arrays contain null elements
                     if f.get('goals') is None or f['goals'].get('home') is None or f['goals'].get('away') is None:
                         continue
                         
@@ -128,7 +121,6 @@ if st.button("⚡ Generate Advanced Match Projection"):
                     h_name = f['teams']['home']['name']
                     a_name = f['teams']['away']['name']
                     
-                    # Map metrics to selected comparison profiles using case-insensitive checks
                     if home_input.lower() in [h_name.lower(), a_name.lower()]:
                         current_is_home = (h_name.lower() == home_input.lower())
                         t_stats[home_input]["gf"] += (h_xg if current_is_home else a_xg) * w
@@ -141,9 +133,8 @@ if st.button("⚡ Generate Advanced Match Projection"):
                         t_stats[away_input]["ga"] += (a_xg if current_is_home else h_xg) * w
                         t_stats[away_input]["w"] += w
 
-                # Validate data availability thresholds before computing formulas
                 if global_w == 0 or t_stats[home_input]["w"] == 0 or t_stats[away_input]["w"] == 0:
-                    st.error(f"❌ Insufficient match history found for '{home_input}' or '{away_input}'. Verify team names match the official league standard spelling.")
+                    st.error(f"❌ Insufficient match history found for '{home_input}' or '{away_input}'. Verify team names match official league spellings exactly.")
                 else:
                     avg_h_xg = global_h_xg / global_w
                     avg_a_xg = global_a_xg / global_w
