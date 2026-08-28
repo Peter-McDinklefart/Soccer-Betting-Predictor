@@ -16,14 +16,14 @@ st.write("Professional-grade Dixon-Coles model utilizing Exponential Time-Decay 
 # --- CORE MATH LAYERS ---
 def calculate_time_weight(match_date_str, target_date, half_life_days=30):
     try:
-        # Strip timestamp timezone notation safely
+        # Strip timestamp timezone notation safely to extract 'YYYY-MM-DD'
         clean_date_str = match_date_str.split("T")[0]
         match_date = datetime.strptime(clean_date_str, "%Y-%m-%d")
         delta_days = (target_date - match_date).days
         if delta_days < 0: 
             return 0.0
         return math.exp(-(math.log(2) / half_life_days) * delta_days)
-    except Exception as e:
+    except Exception:
         return 0.0
 
 def dixon_coles_rho(x, y, mu, eta, tau):
@@ -49,7 +49,8 @@ def calculate_dixon_coles_probs(mu, eta, tau=-0.05, max_goals=6):
     return home_win / total_p, draw / total_p, away_win / total_p
 
 # --- SIDEBAR CONFIGURATION ---
-API_KEY = st.sidebar.text_input("RapidAPI Key:", type="password")
+# Safely pulls from Streamlit secrets vault, or falls back to sidebar textbox
+API_KEY = st.secrets.get("MY_RAPIDAPI_KEY", st.sidebar.text_input("RapidAPI Key:", type="password"))
 half_life = st.sidebar.slider("Form Decay Half-Life (Days)", 10, 60, 25)
 
 league_options = {
@@ -70,26 +71,26 @@ with col2:
 
 if st.button("⚡ Generate Advanced Match Projection"):
     if not API_KEY or len(API_KEY.strip()) < 10:
-        st.warning("⚠️ Please provide a valid RapidAPI Key in the sidebar.")
+        st.warning("⚠️ Please provide a valid RapidAPI Key.")
     else:
         with st.spinner("Processing live historical event coordinates and xG models..."):
-            # Set up unified network configuration headers
+            # Construct secure headers using cleaned inputs
             headers = {
                 "X-RapidAPI-Key": API_KEY.strip(), 
                 "X-RapidAPI-Host": HOST
             }
             league_id = league_options[selected_league]
 
-            # Safe endpoint compilation
+            # Safe endpoint compilation using global BASE_URL variable
             url = f"{BASE_URL}/fixtures"
             params = {"league": str(league_id), "season": str(season_year), "status": "FT"}
             
             try:
                 response_obj = requests.get(url, headers=headers, params=params)
                 
-                # Check for HTTP Layer Errors (e.g., 403 Forbidden)
+                # Check for HTTP Layer Errors (e.g., 403 Forbidden or 429 Rate Limit)
                 if response_obj.status_code != 200:
-                    st.error(f"❌ Server Connection Error ({response_obj.status_code}). Check if your API subscription is active.")
+                    st.error(f"❌ Server Connection Error ({response_obj.status_code}). Check if your API subscription or key is active.")
                     st.stop()
                     
                 res = response_obj.json()
@@ -113,20 +114,21 @@ if st.button("⚡ Generate Advanced Match Projection"):
                     if w < 0.01: 
                         continue
                     
-                    # Target scoreline parameters
-                    if f['score']['fulltime']['home'] is None or f['score']['fulltime']['away'] is None:
+                    # Prevent crashes if historical scoreline arrays contain null elements
+                    if f.get('goals') is None or f['goals'].get('home') is None or f['goals'].get('away') is None:
                         continue
                         
-                    h_xg = float(f['score']['fulltime']['home'])
-                    a_xg = float(f['score']['fulltime']['away'])
+                    h_xg = float(f['goals']['home'])
+                    a_xg = float(f['goals']['away'])
 
                     global_h_xg += h_xg * w
                     global_a_xg += a_xg * w
                     global_w += w
 
-                    h_name, a_name = f['teams']['home']['name'], f['teams']['away']['name']
+                    h_name = f['teams']['home']['name']
+                    a_name = f['teams']['away']['name']
                     
-                    # Map metrics to selected comparison profiles
+                    # Map metrics to selected comparison profiles using case-insensitive checks
                     if home_input.lower() in [h_name.lower(), a_name.lower()]:
                         current_is_home = (h_name.lower() == home_input.lower())
                         t_stats[home_input]["gf"] += (h_xg if current_is_home else a_xg) * w
@@ -139,8 +141,9 @@ if st.button("⚡ Generate Advanced Match Projection"):
                         t_stats[away_input]["ga"] += (a_xg if current_is_home else h_xg) * w
                         t_stats[away_input]["w"] += w
 
+                # Validate data availability thresholds before computing formulas
                 if global_w == 0 or t_stats[home_input]["w"] == 0 or t_stats[away_input]["w"] == 0:
-                    st.error(f"❌ Insufficient match history found in the database for '{home_input}' or '{away_input}'. Check your capitalization/spelling matches the league standard.")
+                    st.error(f"❌ Insufficient match history found for '{home_input}' or '{away_input}'. Verify team names match the official league standard spelling.")
                 else:
                     avg_h_xg = global_h_xg / global_w
                     avg_a_xg = global_a_xg / global_w
@@ -164,4 +167,3 @@ if st.button("⚡ Generate Advanced Match Projection"):
                     m3.metric(f"🚀 {away_input} Win", f"{p_loss*100:.1f}%")
                     
                     st.info(f"📋 **Expected Output Scaling:** {home_input} Expected: {mu:.2f} goals vs {away_input} Expected: {eta:.2f} goals")
-
