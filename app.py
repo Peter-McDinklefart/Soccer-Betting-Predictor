@@ -4,7 +4,11 @@ import requests
 import math
 from datetime import datetime
 
-# --- UI HEADER ---
+# --- GLOBAL CONFIGURATION (FIXED URL INFRASTRUCTURE) ---
+HOST = "://rapidapi.com"
+BASE_URL = "https://://rapidapi.com/v3"
+
+# --- STREAMLIT UI HEADER ---
 st.set_page_config(page_title="Alpha-Predict Soccer Engine", layout="wide")
 st.title("⚽ Alpha-Predict: Advanced Soccer Engine")
 st.write("Professional-grade Dixon-Coles model utilizing Exponential Time-Decay and Expected Goals (xG).")
@@ -12,11 +16,14 @@ st.write("Professional-grade Dixon-Coles model utilizing Exponential Time-Decay 
 # --- CORE MATH LAYERS ---
 def calculate_time_weight(match_date_str, target_date, half_life_days=30):
     try:
-        match_date = datetime.strptime(match_date_str.split("T")[0], "%Y-%m-%d")
+        # Strip timestamp timezone notation safely
+        clean_date_str = match_date_str.split("T")[0]
+        match_date = datetime.strptime(clean_date_str, "%Y-%m-%d")
         delta_days = (target_date - match_date).days
-        if delta_days < 0: return 0.0
+        if delta_days < 0: 
+            return 0.0
         return math.exp(-(math.log(2) / half_life_days) * delta_days)
-    except:
+    except Exception as e:
         return 0.0
 
 def dixon_coles_rho(x, y, mu, eta, tau):
@@ -37,6 +44,8 @@ def calculate_dixon_coles_probs(mu, eta, tau=-0.05, max_goals=6):
     away_win = np.sum(np.triu(matrix, 1))
     draw = np.sum(np.diag(matrix))
     total_p = home_win + away_win + draw
+    if total_p == 0:
+        return 0.33, 0.33, 0.33
     return home_win / total_p, draw / total_p, away_win / total_p
 
 # --- SIDEBAR CONFIGURATION ---
@@ -44,68 +53,94 @@ API_KEY = st.sidebar.text_input("RapidAPI Key:", type="password")
 half_life = st.sidebar.slider("Form Decay Half-Life (Days)", 10, 60, 25)
 
 league_options = {
-    "English Premier League": 39, "La Liga (Spain)": 140, 
-    "Serie A (Italy)": 135, "Bundesliga (Germany)": 78
+    "English Premier League": 39, 
+    "La Liga (Spain)": 140, 
+    "Serie A (Italy)": 135, 
+    "Bundesliga (Germany)": 78
 }
-selected_league = st.sidebar.selectbox("League", list(league_options.keys()))
+selected_league = st.sidebar.selectbox("League Context", list(league_options.keys()))
 season_year = st.sidebar.number_input("Season Year", min_value=2023, max_value=2027, value=2026)
 
 # --- APPLICATION INPUTS ---
 col1, col2 = st.columns(2)
-with col1: home_input = st.text_input("Home Team:", "Arsenal")
-with col2: away_input = st.text_input("Away Team:", "Chelsea")
+with col1: 
+    home_input = st.text_input("Home Team Name:", "Arsenal")
+with col2: 
+    away_input = st.text_input("Away Team Name:", "Chelsea")
 
 if st.button("⚡ Generate Advanced Match Projection"):
-    if not API_KEY:
-        st.warning("Please provide your RapidAPI Key in the sidebar.")
+    if not API_KEY or len(API_KEY.strip()) < 10:
+        st.warning("⚠️ Please provide a valid RapidAPI Key in the sidebar.")
     else:
         with st.spinner("Processing live historical event coordinates and xG models..."):
-            # Setup headers
-            headers = {"X-RapidAPI-Key": API_KEY, "X-RapidAPI-Host": "://rapidapi.com"}
-            base_url = "https://://rapidapi.com/v3"
+            # Set up unified network configuration headers
+            headers = {
+                "X-RapidAPI-Key": API_KEY.strip(), 
+                "X-RapidAPI-Host": HOST
+            }
             league_id = league_options[selected_league]
 
-            # Fetch Recent Fixtures
-            url = f"{base_url}/fixtures"
+            # Safe endpoint compilation
+            url = f"{BASE_URL}/fixtures"
             params = {"league": str(league_id), "season": str(season_year), "status": "FT"}
-            res = requests.get(url, headers=headers, params=params).json()
+            
+            try:
+                response_obj = requests.get(url, headers=headers, params=params)
+                
+                # Check for HTTP Layer Errors (e.g., 403 Forbidden)
+                if response_obj.status_code != 200:
+                    st.error(f"❌ Server Connection Error ({response_obj.status_code}). Check if your API subscription is active.")
+                    st.stop()
+                    
+                res = response_obj.json()
+            except Exception as network_err:
+                st.error(f"❌ Failed to reach data endpoint: {network_err}")
+                st.stop()
 
             if not res.get('response') or len(res['response']) == 0:
-                st.error("Could not fetch historical data for this selection. Double check your API key or season.")
+                st.error("❌ Zero fixtures returned. The season year chosen may not have active data yet.")
             else:
                 raw_fixtures = res['response']
                 target_date = datetime.now()
 
-                # Aggregate Decay-Weighted Matrix
+                # Aggregate Decay-Weighted Data Matrices
                 global_h_xg, global_a_xg, global_w = 0, 0, 0
-                t_stats = {home_input: {"gf":0,"ga":0,"w":0}, away_input: {"gf":0,"ga":0,"w":0}}
+                t_stats = {home_input: {"gf": 0, "ga": 0, "w": 0}, away_input: {"gf": 0, "ga": 0, "w": 0}}
 
                 for f in raw_fixtures:
                     match_date_str = f['fixture']['date']
                     w = calculate_time_weight(match_date_str, target_date, half_life)
-                    if w < 0.01: continue
+                    if w < 0.01: 
+                        continue
                     
-                    # Fallback to score if xG data isn't active on free endpoint structure
-                    h_xg = float(f['score']['fulltime']['home'] if f['score']['fulltime']['home'] is not None else 0)
-                    a_xg = float(f['score']['fulltime']['away'] if f['score']['fulltime']['away'] is not None else 0)
+                    # Target scoreline parameters
+                    if f['score']['fulltime']['home'] is None or f['score']['fulltime']['away'] is None:
+                        continue
+                        
+                    h_xg = float(f['score']['fulltime']['home'])
+                    a_xg = float(f['score']['fulltime']['away'])
 
                     global_h_xg += h_xg * w
                     global_a_xg += a_xg * w
                     global_w += w
 
-                    # Map metrics to target teams
                     h_name, a_name = f['teams']['home']['name'], f['teams']['away']['name']
-                    if home_input in [h_name, a_name]:
-                        t_stats[home_input]["gf"] += (h_xg if h_name == home_input else a_xg) * w
-                        t_stats[home_input]["ga"] += (a_xg if h_name == home_input else h_xg) * w
+                    
+                    # Map metrics to selected comparison profiles
+                    if home_input.lower() in [h_name.lower(), a_name.lower()]:
+                        current_is_home = (h_name.lower() == home_input.lower())
+                        t_stats[home_input]["gf"] += (h_xg if current_is_home else a_xg) * w
+                        t_stats[home_input]["ga"] += (a_xg if current_is_home else h_xg) * w
                         t_stats[home_input]["w"] += w
-                    if away_input in [h_name, a_name]:
-                        t_stats[away_input]["gf"] += (a_xg if a_name == away_input else h_xg) * w
-                        t_stats[away_input]["ga"] += (h_xg if a_name == away_input else a_xg) * w
+                        
+                    if away_input.lower() in [h_name.lower(), a_name.lower()]:
+                        current_is_home = (h_name.lower() == away_input.lower())
+                        t_stats[away_input]["gf"] += (h_xg if current_is_home else a_xg) * w
+                        t_stats[away_input]["ga"] += (a_xg if current_is_home else h_xg) * w
                         t_stats[away_input]["w"] += w
 
                 if global_w == 0 or t_stats[home_input]["w"] == 0 or t_stats[away_input]["w"] == 0:
-                    st.error("Insufficient recent match history found for one or both teams in this system.")
+                    st.error(f"❌ Insufficient match history found in the database for '{home_input}' or '{away_input}'. Check your capitalization/spelling matches the league standard.")
                 else:
                     avg_h_xg = global_h_xg / global_w
                     avg_a_xg = global_a_xg / global_w
@@ -129,3 +164,4 @@ if st.button("⚡ Generate Advanced Match Projection"):
                     m3.metric(f"🚀 {away_input} Win", f"{p_loss*100:.1f}%")
                     
                     st.info(f"📋 **Expected Output Scaling:** {home_input} Expected: {mu:.2f} goals vs {away_input} Expected: {eta:.2f} goals")
+
